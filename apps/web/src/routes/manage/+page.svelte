@@ -18,6 +18,7 @@
   import { SortDirection, type SortOption } from '$lib/data/sort-types';
   import { getStorageHandler } from '$lib/data/storage/storage-handler-factory';
   import { StorageKey } from '$lib/data/storage/storage-types';
+  import type { BaseStorageHandler } from '$lib/data/storage/handler/base-handler';
   import { storageSource$ } from '$lib/data/storage/storage-view';
   import {
     booklistSortOptions$,
@@ -49,9 +50,12 @@
   } from '$lib/functions/replication/replication-progress';
   import { pluralize } from '$lib/functions/utils';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
+  import type { FolderCardProps } from '$lib/components/book-card/folder-card-props';
+  import DeleteFolderDialog from '$lib/components/delete-folder-dialog.svelte';
+  import FolderPickerDialog from '$lib/components/folder-picker-dialog.svelte';
   import pLimit from 'p-limit';
   import { combineLatest, map, Observable, share, Subject, switchMap, takeUntil } from 'rxjs';
-  import { onDestroy, tick } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import Fa from 'svelte-fa';
 
   const booksAreLoading$ = database.listLoading$.pipe(map((isLoading) => isLoading));
@@ -107,9 +111,31 @@
   let progressBase = 0;
   let executionStart: number;
 
+  let currentFolderId: number | null = null;
+  let folderPath: Array<{ id: number; name: string }> = [];
+  let selectedFolderIds: ReadonlySet<number> = new Set();
+  let folders: FolderCardProps[] = [];
+  let currentHandler: BaseStorageHandler;
+
+  $: displayedBookCards = ($bookCards$ || []).filter((card) => {
+    if (currentFolderId === null) {
+      return card.folderId === undefined || card.folderId === null;
+    }
+    return card.folderId === currentFolderId;
+  });
+
+  $: if ($bookCards$ && currentHandler) {
+    updateFolderCovers();
+  }
+
+  onMount(() => {
+    navigateToFolder(null);
+  });
+
   $: {
     if (!selectMode) {
       selectedBookIds = new Set();
+      selectedFolderIds = new Set();
     }
   }
 
@@ -640,6 +666,144 @@
       ? new Date(seconds * 1000).toISOString().substr(11, 8)
       : '??:??:??';
   }
+
+  async function navigateToFolder(folderId: number | null) {
+    currentFolderId = folderId;
+    const folderList = await database.getFolders(folderId);
+    folderPath = await database.getFolderPath(folderId);
+
+    const handler = getStorageHandler(window, $storageSource$, '');
+    currentHandler = handler;
+    handler.setCurrentFolder(folderId);
+    database.dataListChanged$.next(handler);
+
+    folders = folderList.map((folder) => ({ ...folder, coverStack: [] }));
+  }
+
+  async function updateFolderCovers() {
+    if (!currentHandler || !folders.length) return;
+
+    try {
+      const updatedFolders = await Promise.all(
+        folders.map(async (folder) => {
+          try {
+            const coverStack = await database.getBookCoversForFolder(folder.id, currentHandler);
+            return { ...folder, coverStack };
+          } catch (error) {
+            console.error('Error fetching covers for folder', folder.id, error);
+            return folder;
+          }
+        })
+      );
+
+      folders = updatedFolders;
+    } catch (error) {
+      console.error('Error updating folder covers:', error);
+    }
+  }
+
+  function onFolderClick(folderId: number) {
+    navigateToFolder(folderId);
+  }
+
+  function onBackToParent() {
+    const parentId = folderPath.length > 1 ? folderPath[folderPath.length - 2].id : null;
+    navigateToFolder(parentId);
+  }
+
+  function onBreadcrumbClick(folderId: number | null) {
+    navigateToFolder(folderId);
+  }
+
+  async function onCreateFolder() {
+    const name = window.prompt('Folder name:');
+    if (!name?.trim()) return;
+    await database.createFolder(name.trim(), currentFolderId);
+    await navigateToFolder(currentFolderId);
+  }
+
+  async function onFolderRemoveClick(folderId: number) {
+    if (!operationAllowed()) return;
+
+    const folderName = folderPath.find((f) => f.id === folderId)?.name || 'this folder';
+    const mode = await new Promise<'delete' | 'move_up' | null>((resolver) => {
+      dialogManager.dialogs$.next([
+        {
+          component: DeleteFolderDialog,
+          props: { folderName, resolver }
+        }
+      ]);
+    });
+
+    dialogManager.dialogs$.next([]);
+
+    if (!mode) return;
+
+    const parentId = folderPath.length > 1 ? folderPath[folderPath.length - 2].id : null;
+
+    await database.deleteFolder(folderId, mode);
+
+    if (currentFolderId === folderId) {
+      await navigateToFolder(parentId);
+    } else {
+      await navigateToFolder(currentFolderId);
+    }
+  }
+
+  async function onMoveToFolder() {
+    const folderId = await new Promise<number | null>((resolver) => {
+      dialogManager.dialogs$.next([
+        {
+          component: FolderPickerDialog,
+          props: { resolver }
+        }
+      ]);
+    });
+
+    dialogManager.dialogs$.next([]);
+
+    if (folderId === undefined) return;
+
+    const bookIds = Array.from(selectedBookIds);
+    if (!bookIds.length) return;
+
+    await database.moveBooksToFolder(bookIds, folderId);
+    selectedBookIds = new Set();
+
+    await navigateToFolder(currentFolderId);
+  }
+
+  async function handleMoveItem(
+    ev: CustomEvent<{
+      itemId: number;
+      itemType: 'book' | 'folder';
+      targetFolderId: number;
+    }>
+  ) {
+    const { itemId, itemType, targetFolderId } = ev.detail;
+
+    if (itemType === 'book') {
+      await database.moveBooksToFolder([itemId], targetFolderId);
+    } else {
+      await database.moveFolder(itemId, targetFolderId);
+    }
+
+    await navigateToFolder(currentFolderId);
+  }
+
+  async function handleCreateFolderWithItems(ev: CustomEvent<{ ids: number[] }>) {
+    const { ids } = ev.detail;
+    if (!ids.length) return;
+
+    const name = window.prompt('Folder name:');
+    if (!name?.trim()) return;
+
+    const folderId = await database.createFolder(name.trim(), currentFolderId);
+    await database.moveBooksToFolder(ids, folderId);
+    selectedBookIds = new Set();
+
+    await navigateToFolder(currentFolderId);
+  }
 </script>
 
 <svelte:head>
@@ -652,7 +816,7 @@
   <BookManagerHeader
     hasBookOpened={!!$currentBookId$}
     selectedCount={selectedBookIds.size}
-    hasBooks={!!$bookCards$?.length}
+    hasBooks={!!displayedBookCards?.length || !!folders?.length}
     {cancelTooltip}
     {replicationProgress}
     {replicationToProgress}
@@ -680,6 +844,8 @@
     on:deleteStatistics={onDeleteStatistics}
     on:replicateData={onReplicateData}
     on:importBackup={(ev) => onImportBackup(ev.detail)}
+    on:createFolderClick={onCreateFolder}
+    on:moveToFolderClick={onMoveToFolder}
   />
 </div>
 
@@ -693,15 +859,42 @@
   on:drop={(ev) => ev.preventDefault()}
   on:drop={(ev) => getDropEventFiles(ev).then(onFilesChange)}
 >
+  {#if folderPath.length}
+    <nav class="mb-4 flex flex-wrap items-center gap-1 text-sm text-blue-400">
+      <button class="cursor-pointer hover:underline" on:click={() => onBreadcrumbClick(null)}>
+        Root
+      </button>
+      {#each folderPath as folder, i}
+        <span class="text-gray-400">/</span>
+        {#if i < folderPath.length - 1}
+          <button
+            class="cursor-pointer hover:underline"
+            on:click={() => onBreadcrumbClick(folder.id)}
+          >
+            {folder.name}
+          </button>
+        {:else}
+          <span class="text-white">{folder.name}</span>
+        {/if}
+      {/each}
+    </nav>
+  {/if}
+
   {#if !$bookCards$ || $booksAreLoading$}
     Loading...
-  {:else if $bookCards$.length}
+  {:else if displayedBookCards.length || folders.length}
     <BookCardList
       currentBookId={$currentBookId$}
       {selectedBookIds}
-      bookCards={$bookCards$}
+      {selectedFolderIds}
+      bookCards={displayedBookCards}
+      {folders}
       on:bookClick={(ev) => onBookClick(ev.detail.id)}
       on:removeBookClick={(ev) => removeBooks([ev.detail.id])}
+      on:folderClick={(ev) => onFolderClick(ev.detail.id)}
+      on:removeFolderClick={(ev) => onFolderRemoveClick(ev.detail.id)}
+      on:moveItem={handleMoveItem}
+      on:createFolderWithItems={handleCreateFolderWithItems}
     />
   {:else}
     <div class="flex justify-center pt-44 text-gray-400 text-opacity-40">

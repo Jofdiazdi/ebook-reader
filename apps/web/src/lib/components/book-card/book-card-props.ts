@@ -14,4 +14,5 @@ export interface BookCardProps {
   progress: number;
   lastBookmarkModified: number;
   isPlaceholder: boolean;
+  folderId?: number | null;
 }

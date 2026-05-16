@@ -96,6 +96,8 @@ export class GDriveStorageHandler extends ApiStorageHandler {
       }
     }
 
+    await this.enrichBookCardsWithFolderIds();
+
     return [...this.titleToBookCard.values()];
   }
 

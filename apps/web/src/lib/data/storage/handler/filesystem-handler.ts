@@ -84,6 +84,8 @@ export class FilesystemStorageHandler extends BaseStorageHandler {
       this.dataListFetched = true;
     }
 
+    await this.enrichBookCardsWithFolderIds();
+
     return [...this.titleToBookCard.values()];
   }
 

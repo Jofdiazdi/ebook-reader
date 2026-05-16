@@ -163,6 +163,159 @@ export class DatabaseService {
     return undefined;
   }
 
+  async getFolders(parentId: number | null) {
+    const db = await this.db;
+    const folders = await db.getAll('folder');
+
+    return folders.filter((f) => f.parentId === parentId);
+  }
+
+  async createFolder(name: string, parentId: number | null) {
+    const db = await this.db;
+    return db.add('folder', { name, parentId });
+  }
+
+  async renameFolder(id: number, name: string) {
+    const db = await this.db;
+    const folder = await db.get('folder', id);
+    if (folder) {
+      await db.put('folder', { ...folder, name });
+    }
+  }
+
+  async deleteFolder(id: number, mode: 'delete' | 'move_up') {
+    const db = await this.db;
+    const folder = await db.get('folder', id);
+    if (!folder) return;
+
+    if (mode === 'delete') {
+      const childFolders = await db.getAllFromIndex('folder', 'parentId', id);
+      const childBookIds = await this.getBookIdsInFolder(id);
+
+      for (const child of childFolders) {
+        await this.deleteFolder(child.id, 'delete');
+      }
+
+      const idsToTitles = new Map<number, string>();
+      for (const bookId of childBookIds) {
+        const book = await db.get('data', bookId);
+        if (book) idsToTitles.set(bookId, book.title);
+      }
+
+      if (childBookIds.length) {
+        await this.deleteData(childBookIds, idsToTitles, new AbortController().signal, true);
+      }
+
+      await db.delete('folder', id);
+    } else {
+      const parentId = folder.parentId;
+
+      const childFolders = await db.getAllFromIndex('folder', 'parentId', id);
+      for (const child of childFolders) {
+        await db.put('folder', { ...child, parentId });
+      }
+
+      const dataInFolder = await db.getAllFromIndex('data', 'folderId', id);
+      for (const book of dataInFolder) {
+        await db.put('data', { ...book, folderId: parentId });
+      }
+
+      await db.delete('folder', id);
+    }
+  }
+
+  async getBookIdsInFolder(folderId: number) {
+    const db = await this.db;
+    const books = await db.getAllFromIndex('data', 'folderId', folderId);
+    return books.map((b) => b.id);
+  }
+
+  async moveBooksToFolder(bookIds: number[], folderId: number | null) {
+    const db = await this.db;
+    const tx = db.transaction('data', 'readwrite');
+
+    for (const bookId of bookIds) {
+      const book = await tx.store.get(bookId);
+      if (book) {
+        await tx.store.put({ ...book, folderId });
+      }
+    }
+
+    await tx.done;
+  }
+
+  async moveFolder(folderId: number, newParentId: number | null) {
+    const db = await this.db;
+    const folder = await db.get('folder', folderId);
+    if (!folder) return;
+
+    const wouldCreateCycle = await this.isDescendant(folderId, newParentId);
+    if (wouldCreateCycle) return;
+
+    await db.put('folder', { ...folder, parentId: newParentId });
+  }
+
+  async getFolderPath(id: number | null): Promise<Array<{ id: number; name: string }>> {
+    if (id === null) return [];
+
+    const db = await this.db;
+    const folder = await db.get('folder', id);
+    if (!folder) return [];
+
+    const parentPath = await this.getFolderPath(folder.parentId);
+    return [...parentPath, { id: folder.id, name: folder.name }];
+  }
+
+  async getBookCoversForFolder(
+    folderId: number,
+    _handler: BaseStorageHandler,
+    limit = 3
+  ): Promise<(string | Blob)[]> {
+    const covers: (string | Blob)[] = [];
+
+    try {
+      const db = await this.db;
+      let books: BooksDbBookData[] = [];
+
+      try {
+        books = await db.getAllFromIndex('data', 'folderId', folderId);
+      } catch (_indexError) {
+        // Fallback: query all and filter manually if index fails
+        const allBooks = await db.getAll('data');
+        books = allBooks.filter((book) => book.folderId === folderId);
+      }
+
+      for (const book of books) {
+        if (covers.length >= limit) break;
+        if (!book.coverImage) continue;
+
+        const ci = book.coverImage;
+        if (typeof ci === 'string' && ci.length > 0) {
+          covers.push(ci);
+        } else if (ci instanceof Blob) {
+          covers.push(ci);
+        } else if (ci instanceof ArrayBuffer || ArrayBuffer.isView(ci)) {
+          covers.push(new Blob([ci], { type: 'image/jpeg' }));
+        }
+      }
+    } catch (error) {
+      console.error('Error in getBookCoversForFolder:', error);
+    }
+
+    return covers;
+  }
+
+  private async isDescendant(folderId: number, candidateParentId: number | null): Promise<boolean> {
+    if (candidateParentId === null) return false;
+    if (folderId === candidateParentId) return true;
+
+    const db = await this.db;
+    const folder = await db.get('folder', candidateParentId);
+    if (!folder || folder.parentId === null) return false;
+
+    return this.isDescendant(folderId, folder.parentId);
+  }
+
   async setFirstBookRead(
     bookTitle: string,
     startDaysHoursForTracker: number,

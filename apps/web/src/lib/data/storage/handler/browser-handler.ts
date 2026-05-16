@@ -20,6 +20,12 @@ import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-
 import { StorageDataType } from '$lib/data/storage/storage-types';
 
 export class BrowserStorageHandler extends BaseStorageHandler {
+  setCurrentFolder(id: number | null) {
+    this.currentFolderId = id;
+    this.titleToBookCard.clear();
+    this.dataListFetched = false;
+  }
+
   updateSettings(
     window: Window,
     isForBrowser: boolean,
@@ -40,7 +46,15 @@ export class BrowserStorageHandler extends BaseStorageHandler {
 
       try {
         const db = await database.db;
-        const data = await db.getAll('data');
+        let data: BooksDbBookData[];
+
+        if (this.currentFolderId !== null) {
+          data = await db.getAllFromIndex('data', 'folderId', this.currentFolderId);
+        } else {
+          data = (await db.getAll('data')).filter(
+            (book) => book.folderId === undefined || book.folderId === null
+          );
+        }
 
         for (let index = 0, { length } = data; index < length; index += 1) {
           const book = data[index];
@@ -57,6 +71,8 @@ export class BrowserStorageHandler extends BaseStorageHandler {
             isPlaceholder: !book.elementHtml
           });
         }
+
+        await this.enrichBookCardsWithFolderIds();
 
         this.dataListFetched = true;
       } catch (error) {
@@ -338,8 +354,9 @@ export class BrowserStorageHandler extends BaseStorageHandler {
     let idToReturn = 0;
 
     if (!(data instanceof File)) {
+      const bookData = { ...data, folderId: this.currentFolderId ?? null };
       const storedBookData = await database.upsertData(
-        data,
+        bookData,
         this.saveBehavior,
         skipTimestampFallback,
         removeStorageContext

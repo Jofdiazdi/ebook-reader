@@ -9,7 +9,7 @@ import { openDB } from 'idb';
 import upgradeBooksDbFromV2 from './versions/v2/upgrade';
 
 export function createBooksDb(name = 'books') {
-  return openDB<BooksDb>(name, 6, {
+  return openDB<BooksDb>(name, 7, {
     async upgrade(oldDb, oldVersion, newVersion, transaction) {
       switch (oldVersion) {
         case 0: {
@@ -18,6 +18,13 @@ export function createBooksDb(name = 'books') {
             autoIncrement: true
           });
           dataStore.createIndex('title', 'title');
+          dataStore.createIndex('folderId', 'folderId');
+
+          const folderStore = oldDb.createObjectStore('folder', {
+            keyPath: 'id',
+            autoIncrement: true
+          });
+          folderStore.createIndex('parentId', 'parentId');
 
           oldDb.createObjectStore('bookmark', {
             keyPath: 'dataId'
@@ -90,6 +97,18 @@ export function createBooksDb(name = 'books') {
           oldDb.createObjectStore('subtitle', { keyPath: 'title' });
 
           oldDb.createObjectStore('handle', { keyPath: ['title', 'dataType'] });
+
+          break;
+        }
+        case 6: {
+          const folderStore = oldDb.createObjectStore('folder', {
+            keyPath: 'id',
+            autoIncrement: true
+          });
+          folderStore.createIndex('parentId', 'parentId');
+
+          const dataStore = transaction.objectStore('data');
+          dataStore.createIndex('folderId', 'folderId');
 
           break;
         }
