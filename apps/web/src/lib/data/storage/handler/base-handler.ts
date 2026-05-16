@@ -16,6 +16,7 @@ import {
 } from '$lib/data/database/books-db/versions/books-db';
 import type { Section } from '$lib/data/database/books-db/versions/v4/books-db-v4';
 import { storageRootName } from '$lib/data/env';
+import { database } from '$lib/data/store';
 import { MergeMode } from '$lib/data/merge-mode';
 import { InternalStorageSources, type StorageKey } from '$lib/data/storage/storage-types';
 import { exporterVersion } from '$lib/functions/replication/replicator';
@@ -161,6 +162,8 @@ export abstract class BaseStorageHandler {
 
   protected sanitizedTitle = '';
 
+  protected currentFolderId: number | null = null;
+
   protected dataListFetched = false;
 
   protected rootFileListFetched = false;
@@ -208,6 +211,10 @@ export abstract class BaseStorageHandler {
 
   getCurrentStorageSource() {
     return this.storageSourceName;
+  }
+
+  setCurrentFolder(_id: number | null) {
+    this.currentFolderId = _id;
   }
 
   startContext(context: ReplicationContext, cancelSignal?: AbortSignal) {
@@ -359,6 +366,26 @@ export abstract class BaseStorageHandler {
     };
 
     this.titleToBookCard.set(title, bookCard);
+  }
+
+  protected async enrichBookCardsWithFolderIds() {
+    if (!this.titleToBookCard.size) return;
+
+    const db = await database.db;
+    const allData = await db.getAll('data');
+    const titleToFolderId = new Map(allData.map((d) => [d.title, d.folderId ?? null]));
+
+    for (const [title, bookCard] of this.titleToBookCard.entries()) {
+      bookCard.folderId = titleToFolderId.get(title) ?? null;
+    }
+  }
+
+  getBookCard(title: string): BookCardProps | undefined {
+    return this.titleToBookCard.get(title);
+  }
+
+  getBookCards(): BookCardProps[] {
+    return [...this.titleToBookCard.values()];
   }
 
   protected async zipBookData(bookdata: Omit<BooksDbBookData, 'id'>, progressBase = 1) {

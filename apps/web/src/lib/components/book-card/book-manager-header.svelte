@@ -71,6 +71,8 @@
     deleteStatistics: void;
     replicateData: void;
     cancelReplication: void;
+    createFolderClick: void;
+    moveToFolderClick: void;
   }>();
 
   const nTranslateXHeaderMat = '-translate-x-3 xl:-translate-x-2.5';
@@ -503,6 +505,31 @@
           {/if}
         {/if}
 
+        <div
+          title="New Folder"
+          class="relative transform-gpu"
+          in:scale={inAnimationParams}
+          out:scale={outAnimationParams}
+        >
+          <div
+            tabindex="0"
+            role="button"
+            class={baseIconClasses}
+            on:click={() => dispatch('createFolderClick')}
+            on:keyup={dummyFn}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              class="h-full w-full fill-current"
+            >
+              <path
+                d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10zM13 9h-2v3H8v2h3v3h2v-3h3v-2h-3V9z"
+              />
+            </svg>
+          </div>
+        </div>
+
         {#if selectedCount > 0}
           <div
             tabindex="0"
@@ -542,6 +569,26 @@
               <Fa icon={faCalendarXmark} />
             </div>
           {/if}
+          <div
+            tabindex="0"
+            role="button"
+            title="Move selected Books to Folder"
+            class="transform-gpu {baseIconClasses}"
+            in:scale={inAnimationParams}
+            out:scale={outAnimationParams}
+            on:click={() => dispatch('moveToFolderClick')}
+            on:keyup={dummyFn}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              class="h-full w-full fill-current"
+            >
+              <path
+                d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"
+              />
+            </svg>
+          </div>
           <div
             tabindex="0"
             role="button"
